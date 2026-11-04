@@ -1,12 +1,12 @@
 # Gate patient signup with a server-side captcha
 
-The decision is simple: verify the captcha before creating a patient account, and treat a rejected verification as a client-visible registration decision rather than an internal exception. This example uses Infrai through one API and one `INFRAI_API_KEY`; the signup route calls the captcha and auth endpoints with plain HTTP, so there is no service-specific SDK to install.
+We treat captcha verification as a prerequisite ledger entry: the account creation must not occur unless the verification passes, and a failed verification is a client-visible registration decision, not an internal fault to be swallowed. Infrai is used here through one API and one `INFRAI_API_KEY`; the signup route issues plain HTTP calls to the captcha and auth endpoints, so no service-specific SDK is required for integration from any language.
 
-The second boundary is deliberately local. Appointment updates become operational notifications only after confirmation or cancellation, and the formatter omits `clinicalNote` even when the workflow receives one. Keeping that rule separate from transport code makes the privacy decision easy to test and review.
+The second boundary is intentionally kept within the local process. Appointment updates are promoted to operational notifications only after confirmation or cancellation, and the formatter drops `clinicalNote` even when the workflow receives one. Isolating this privacy rule from transport logic allows straightforward unit testing and audit review, which matters under healthcare compliance limits on PHI exposure.
 
 ## Run the signup path
 
-Use Node.js 20 or newer, then install dependencies and start the service:
+Target Node.js 20 or later, install dependencies, and bring the service up:
 
 ```bash
 npm install
@@ -14,7 +14,7 @@ export INFRAI_API_KEY="your-key"
 npm run dev
 ```
 
-Send a validated request with a stable idempotency key. Reusing that key for the same registration keeps a retry tied to the same account creation operation.
+Submit a validated request bearing a stable idempotency key. Replaying that key for the same registration binds any retry to the identical account creation operation, preserving exactly-once semantics.
 
 ```bash
 curl http://localhost:3000/signup \
@@ -24,28 +24,28 @@ curl http://localhost:3000/signup \
   --data '{"email":"ada@example.com","password":"correct-horse-2026","name":"Ada","widgetRecordId":"widget-record-123","captchaToken":"browser-issued-token"}'
 ```
 
-Expected successful response:
+A successful response appears as:
 
 ```json
 {"patientId":"usr_123","registration":"created"}
 ```
 
-`src/infrai_signup.ts` parses the Infrai envelope before interpreting the HTTP status, surfaces ordinary rejections with their status, and retries rate-limited calls with bounded exponential delay while honoring `Retry-After`. The create request carries `idempotency_key`, while the browser-facing token is accepted only by the local request schema and translated to the exact captcha field `token`.
+`src/infrai_signup.ts` parses the Infrai envelope prior to evaluating HTTP status, returns ordinary rejections with their status codes, and retries rate-limited calls with bounded exponential backoff while respecting `Retry-After`. The create request embeds `idempotency_key`, whereas the browser-facing token is accepted solely by the local request schema and mapped to the precise captcha field `token`. From a Go backend standpoint, the lack of a required SDK means the standard library handles reconciliation without external coupling.
 
 ## Verify the patient-safe decision
 
-The focused test feeds `planOperationalNotification` a confirmed appointment whose input contains `clinicalNote: "Discuss cardiac test results"`. The expected result is a confirmation containing the patient display name, clinic, and UTC schedule, with no clinical note; a merely requested appointment produces no notification.
+The narrow test supplies `planOperationalNotification` a confirmed appointment whose payload includes `clinicalNote: "Discuss cardiac test results"`. The expected output is a confirmation carrying patient display name, clinic, and UTC schedule, with no clinical note; a merely requested appointment yields no notification. This separation supports an auditable trail for patient communications.
 
 ```bash
 npm test
 npm run typecheck
 ```
 
-This repository demonstrates the signup gate and notification-planning decision. Delivery of the returned notification through SMS, email, or a patient portal belongs in the hosting application's audited communications layer.
+This repository illustrates the signup gate and the notification-planning choice. Actual delivery of the produced notification via SMS, email, or patient portal must reside in the hosting application's audited communications layer, where retention policies can be enforced.
 
 ## Before you deploy: Captcha Gated Healthtech Signup
 
-Above is the happy path. The production checklist: The details below apply to Captcha Gated Healthtech Signup.
+The happy path above is insufficient for production. The production checklist follows; the details below apply to Captcha Gated Healthtech Signup.
 
 **Account & key**
 
